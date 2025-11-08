@@ -1,0 +1,423 @@
+太好了！我们现在进入 **2.3.3：资源类型 — 内存、文件句柄、锁、Socket 等**。
+
+这是 **RAII 哲学的实践课**，将教你如何为**各种系统资源**实现 RAII 封装。作为 Java 开展者，你可能使用 `AutoCloseable` 或 try-with-resources 管理资源，而 C++ 的 RAII 提供**更精细、更高效、更通用**的资源管理方式。掌握这些模式，能让你编写出**系统级安全**的 C++ 代码。
+
+我们将继续严格遵循你的学习偏好：
+- ✅ SMART 目标  
+- ✅ 结构先行（资源类型地图）  
+- ✅ 生活化比喻  
+- ✅ 动手为王（含基础/进阶/陷阱题）  
+- ✅ 螺旋复习（衔接 2.3.2 + Java 经验）  
+- ✅ 主动 learning + 复盘
+
+---
+
+## 🎯 KU 2.3.3：资源类型
+
+> **所属阶段**：Phase 2 — 面向对象编程  
+> **前置知识**：2.3.2（RAII 哲学）、2.3.1（析构函数）、Java 资源管理经验  
+> **后续衔接**：3.2（智能指针）、3.10（文件流）  
+> **预计耗时**：3–4 小时
+
+---
+
+### 🧭 一、结构先行：资源类型地图
+
+```
+2.3.3 资源类型
+├── 1. 内存资源
+│   ├── 1.1 new/delete → std::unique_ptr
+│   ├── 1.2 malloc/free → std::unique_ptr + 自定义删除器
+│   └── 1.3 数组 → std::unique_ptr<T[]>
+├── 2. 文件资源
+│   ├── 2.1 C 文件：FILE* → std::unique_ptr + fclose
+│   ├── 2.2 C++ 文件：std::fstream（已 RAII）
+│   └── 2.3 目录：DIR* → 自定义 RAII
+├── 3. 同步资源
+│   ├── 3.1 互斥锁：std::mutex → std::lock_guard
+│   ├── 3.2 读写锁：std::shared_mutex
+│   └── 3.3 条件变量：需配合锁使用
+├── 4. 网络资源
+│   ├── 4.1 Socket：int sockfd → 自定义 RAII
+│   ├── 4.2 Winsock：SOCKET → 自定义 RAII
+│   └── 4.3 高级库：asio::ip::tcp::socket（已 RAII）
+├── 5. 其他系统资源
+│   ├── 5.1 线程：std::thread（已 RAII）
+│   ├── 5.2 进程：pid_t → 自定义 RAII
+│   └── 5.3 OpenGL：GLuint → 自定义 RAII
+└── 6. 最佳实践
+    ├── 6.1 优先标准库 RAII 类
+    ├── 6.2 自定义 RAII 用 unique_ptr + 删除器
+    └── 6.3 禁止拷贝，支持移动
+```
+
+---
+
+### 🎯 二、SMART 学习目标
+
+- **Specific**：能为内存、文件、锁、Socket 等资源实现 RAII 封装，并理解标准库 RAII 类的使用。
+- **Measurable**：完成 4 道基础题 + 2 道陷阱题，能实现异常安全的 Socket 句柄类。
+- **Achievable**：通过“资源保险箱”比喻理解 RAII 封装。
+- **Relevant**：这是编写系统级 C++ 代码的必备技能。
+- **Time-bound**：2 天内完成。
+
+---
+
+### 🌍 三、生活化比喻：资源保险箱
+
+> 想象不同类型的**资源保险箱**：
+>
+> - **内存保险箱** = 智能收纳盒  
+>   - 放入内存块，自动释放
+>
+> - **文件保险箱** = 文件归档盒  
+>   - 放入文件句柄，自动关闭
+>
+> - **锁保险箱** = 门禁卡盒  
+>   - 放入门禁卡，自动归还
+>
+> - **Socket 保险箱** = 网络连接盒  
+>   - 放入连接，自动断开
+>
+> - **Java 对比**：  
+>   - Java = **手动归还资源**（try-with-resources）  
+>   - **C++ = 保险箱自动归还**（RAII）
+
+> 💡 **关键认知**：**每种资源都需要专属保险箱（RAII 类）**。
+
+---
+
+### 📚 四、知识点分解
+
+#### 1. 内存资源
+- **`new`/`delete`**：
+  ```cpp
+  auto p = std::make_unique<MyClass>(); // 自动 delete
+  ```
+- **`malloc`/`free`**：
+  ```cpp
+  auto buffer = std::unique_ptr<char[], decltype(&std::free)>(
+      static_cast<char*>(std::malloc(1024)), 
+      &std::free
+  );
+  ```
+- **数组**：
+  ```cpp
+  auto arr = std::make_unique<int[]>(100); // 自动 delete[]
+  ```
+
+#### 2. 文件资源
+- **C 文件**：
+  ```cpp
+  auto file = std::unique_ptr<FILE, decltype(&std::fclose)>(
+      std::fopen("data.txt", "r"), 
+      &std::fclose
+  );
+  ```
+- **C++ 文件**：
+  ```cpp
+  std::ifstream file("data.txt"); // 已 RAII
+  ```
+- **目录**：
+  ```cpp
+  class DirHandle {
+      DIR* dir_;
+  public:
+      DirHandle(const char* path) : dir_(opendir(path)) {}
+      ~DirHandle() { if (dir_) closedir(dir_); }
+  };
+  ```
+
+#### 3. 同步资源
+- **互斥锁**：
+  ```cpp
+  std::mutex mtx;
+  {
+      std::lock_guard<std::mutex> lock(mtx); // 自动 unlock
+  }
+  ```
+- **读写锁**：
+  ```cpp
+  std::shared_mutex rw_mtx;
+  {
+      std::shared_lock<std::shared_mutex> lock(rw_mtx); // 读锁
+  }
+  {
+      std::unique_lock<std::shared_mutex> lock(rw_mtx); // 写锁
+  }
+  ```
+
+#### 4. 网络资源
+- **POSIX Socket**：
+  ```cpp
+  class SocketHandle {
+      int sockfd_;
+  public:
+      SocketHandle(int domain, int type, int protocol) 
+          : sockfd_(socket(domain, type, protocol)) {
+          if (sockfd_ == -1) throw std::runtime_error("socket failed");
+      }
+      ~SocketHandle() { if (sockfd_ != -1) close(sockfd_); }
+      // 禁止拷贝
+      SocketHandle(const SocketHandle&) = delete;
+      SocketHandle& operator=(const SocketHandle&) = delete;
+      // 支持移动
+      SocketHandle(SocketHandle&& other) noexcept : sockfd_(other.sockfd_) {
+          other.sockfd_ = -1;
+      }
+      int get() const { return sockfd_; }
+  };
+  ```
+- **Winsock**：
+  ```cpp
+  // Windows
+  class WinSocket {
+      SOCKET sock_;
+  public:
+      WinSocket(int af, int type, int protocol) 
+          : sock_(::socket(af, type, protocol)) {}
+      ~WinSocket() { if (sock_ != INVALID_SOCKET) ::closesocket(sock_); }
+  };
+  ```
+
+#### 5. 其他系统资源
+- **线程**：
+  ```cpp
+  std::thread t(worker);
+  t.join(); // RAII 管理（但需手动 join/detach）
+  ```
+- **进程**：
+  ```cpp
+  class ProcessHandle {
+      pid_t pid_;
+  public:
+      ProcessHandle(const char* cmd) : pid_(fork()) {
+          if (pid_ == 0) execl(cmd, cmd, nullptr);
+      }
+      ~ProcessHandle() { if (pid_ > 0) kill(pid_, SIGTERM); }
+  };
+  ```
+- **OpenGL**：
+  ```cpp
+  class GLTexture {
+      GLuint id_;
+  public:
+      GLTexture() { glGenTextures(1, &id_); }
+      ~GLTexture() { if (id_) glDeleteTextures(1, &id_); }
+  };
+  ```
+
+#### 6. 最佳实践
+- **优先标准库**：
+  - 用 `std::lock_guard`、`std::unique_ptr`、`std::fstream`
+- **自定义 RAII**：
+  - 用 `std::unique_ptr` + 自定义删除器
+  - 禁止拷贝，支持移动
+- **异常安全**：
+  - 构造函数失败时，析构函数不调用（无资源泄漏）
+
+> 💡 **现代 C++ 黄金法则**：  
+> **“标准库 RAII 优先；自定义用 unique_ptr + 删除器；禁止拷贝，支持移动”**
+
+---
+
+### 💻 五、动手为王：可运行示例
+
+#### 示例 1：内存 RAII
+```cpp
+#include <iostream>
+#include <memory>
+#include <cstdlib>
+
+int main() {
+    // malloc/free RAII
+    auto buffer = std::unique_ptr<char[], decltype(&std::free)>(
+        static_cast<char*>(std::malloc(1024)),
+        &std::free
+    );
+    
+    // new/delete RAII
+    auto p = std::make_unique<int>(42);
+    
+    std::cout << "Memory managed safely\n";
+    return 0;
+}
+```
+
+#### 示例 2：文件 RAII
+```cpp
+#include <iostream>
+#include <memory>
+#include <cstdio>
+
+int main() {
+    auto file = std::unique_ptr<FILE, decltype(&std::fclose)>(
+        std::fopen("test.txt", "w"),
+        &std::fclose
+    );
+    
+    if (file) {
+        std::fprintf(file.get(), "Hello RAII File!\n");
+    }
+    // file 自动关闭
+    return 0;
+}
+```
+
+#### 示例 3：锁 RAII
+```cpp
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+std::mutex mtx;
+
+void worker(int id) {
+    std::lock_guard<std::mutex> lock(mtx);
+    std::cout << "Worker " << id << " acquired lock\n";
+    // 自动解锁
+}
+
+int main() {
+    std::thread t1(worker, 1);
+    std::thread t2(worker, 2);
+    t1.join();
+    t2.join();
+    return 0;
+}
+```
+
+#### 示例 4：Socket RAII（POSIX）
+```cpp
+#include <iostream>
+#include <memory>
+#include <sys/socket.h>
+#include <unistd.h>
+
+class SocketHandle {
+    int sockfd_;
+public:
+    SocketHandle(int domain, int type, int protocol) 
+        : sockfd_(::socket(domain, type, protocol)) {
+        if (sockfd_ == -1) {
+            throw std::runtime_error("socket failed");
+        }
+    }
+    
+    ~SocketHandle() {
+        if (sockfd_ != -1) {
+            ::close(sockfd_);
+        }
+    }
+    
+    // 禁止拷贝
+    SocketHandle(const SocketHandle&) = delete;
+    SocketHandle& operator=(const SocketHandle&) = delete;
+    
+    // 支持移动
+    SocketHandle(SocketHandle&& other) noexcept : sockfd_(other.sockfd_) {
+        other.sockfd_ = -1;
+    }
+    
+    int get() const { return sockfd_; }
+};
+
+int main() {
+    try {
+        SocketHandle sock(AF_INET, SOCK_STREAM, 0);
+        std::cout << "Socket created: " << sock.get() << "\n";
+        // 自动关闭
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+    }
+    return 0;
+}
+```
+
+---
+
+### 📝 六、分层练习题
+
+#### 🔹 基础题
+1. **内存 RAII**  
+   - 用 `std::unique_ptr` 管理 `malloc` 分配的内存
+
+2. **文件 RAII**  
+   - 用 `std::unique_ptr` 管理 `fopen` 打开的文件
+
+#### 🔸 进阶题
+3. **锁 RAII**  
+   - 实现 `SharedLock` 类，管理 `std::shared_mutex` 读锁
+
+4. **Socket RAII**  
+   - 实现 Windows `WinSocket` 类（可选）
+
+#### ⚠️ 陷阱题（Java 迁移误区）
+5. **“Java 有 AutoCloseable，C++ 也需要自定义吧？”**  
+   - Q: C++ 需要为所有资源自定义 RAII 类吗？  
+   - A: ⚠️ **不**！  
+     → **标准库已提供** `std::unique_ptr`、`std::lock_guard`、`std::fstream`  
+     → **优先使用标准库**
+
+6. **“RAII 类能拷贝吧？”**  
+   - Q: RAII 类应该支持拷贝吗？  
+   - A: ❌ **通常不**！  
+     → 资源通常**独占**（如文件句柄、锁）  
+     → **禁止拷贝，支持移动**
+
+---
+
+### ⚠️ 七、注意事项与建议
+
+| 问题 | 建议 |
+|------|------|
+| **标准库优先** | 用 `std::lock_guard`、`std::unique_ptr` |
+| **自定义删除器** | 用 `std::unique_ptr<T, Deleter>` |
+| **移动语义** | 资源类通常可移动（unique 语义） |
+| **异常安全** | 构造失败时无资源泄漏 |
+
+> 💡 **现代 C++ 黄金法则**：  
+> **“标准库 RAII 是首选；自定义用 unique_ptr + 删除器；资源独占，禁止拷贝”**
+
+---
+
+### 🔁 八、螺旋复习
+
+- **衔接 2.3.2**：RAII 是资源管理的通用模式  
+- **Java 经验**：C++ RAII 比 Java AutoCloseable 更自动  
+- **当日复习**：默写四类资源的 RAII 封装方式
+
+---
+
+### 🧠 九、主动 learning 任务
+
+1. **自我提问**：
+   - “如何用 RAII 管理数据库连接？”
+   - “RAII 如何与 C API 交互？”
+2. **概念图**：画出标准库 RAII 类与自定义 RAII 类对比
+3. **扮演教师**：向同事解释“为什么 RAII 类通常禁止拷贝”
+
+---
+
+### 🔍 十、复盘清单
+
+✅ 我能为内存、文件、锁、Socket 实现 RAII  
+✅ 我理解标准库 RAII 类的使用  
+✅ 我会用 unique_ptr + 删除器自定义 RAII  
+✅ 我知道资源独占需禁止拷贝  
+✅ 我明白现代 C++ 的资源管理最佳实践
+
+> 🎯 **达标标准**：完成基础题 + 正确分析陷阱题 5 和 6
+
+---
+
+## 🚀 下一步建议
+
+你已掌握 **C++ 资源类型 RAII 封装的核心知识**！
+
+接下来你可以：
+1. **继续学习 2.3.4 Rule of Zero：用 RAII 成员避免自定义特殊成员函数**
+2. **请求生成「C++ RAII 资源速查卡」**
+3. **跳转到练习题答案与解析**
+
+请告诉我你的选择，我们将继续前行！
